@@ -25,7 +25,7 @@ const PORT = Number(process.env.PORT || 3000);
 const STALE_AFTER_MS = 5 * 60 * 1000; // market data older than this is flagged stale
 
 const app = express();
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '256kb' })); app.use((req, res, next) => { res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization'); if (req.method === 'OPTIONS') return res.sendStatus(204); next(); });
 
 // Express 4 does not catch errors thrown in async route handlers — without
 // this, one failed DB query would crash the whole API. Wrap every route so
