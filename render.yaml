@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: launchfolio-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RPC_URL
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: launchfolio-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PROGRAM_ID
+        value: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+      - key: POLL_INTERVAL_MS
+        value: "15000"
+
+  # Run the indexer as a background worker so polling never blocks the API.
+  - type: worker
+    name: launchfolio-indexer
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: node src/indexer/pump.js
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RPC_URL
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: launchfolio-db
+          property: connectionString
+      - key: PROGRAM_ID
+        value: 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P
+      - key: POLL_INTERVAL_MS
+        value: "15000"
+
+databases:
+  - name: launchfolio-db
+    plan: starter
