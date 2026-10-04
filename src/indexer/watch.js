@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 // src/indexer/watch.js — Watchlist indexer entrypoint (lean launch).
 //
-// Polls getSignaturesForAddress per watched mint. The watchlist is the UNION of:
-//   1. the watched_mints DB table (active=true) — the authority; launches
-//      through the pad insert here, so new coins are picked up with no
-//      redeploy and no env-var edit;
-//   2. the WATCHLIST_MINTS env var (comma-separated) — legacy seed/fallback.
+// Polls getSignaturesForAddress per watched mint. The watchlist lives in the
+// watched_mints DB table (active=true) — the SOLE authority. Launches
+// through the pad insert here, so new coins are picked up with no redeploy
+// and no env-var edit. The table is re-read every REFRESH_INTERVAL_MS
+// (default 5 min), so newly registered mints join automatically.
 //
-// The DB list is re-read every REFRESH_INTERVAL_MS (default 5 min), so newly
-// registered mints join the rotation automatically. Pump trade transactions
-// always reference the mint, so per-mint polling catches them. Reuses
-// pump.js's decode pipeline (processTransaction via pollJob): Anchor events
-// → normalized trades → idempotent DB writes.
+// (The legacy WATCHLIST_MINTS env var is intentionally ignored: it belonged
+// to the Crankpad project and kept re-indexing CRANK after the purge.)
 //
-// Env: RPC_URL (required), WATCHLIST_MINTS (optional seed),
-//      DATABASE_URL (required for the DB watchlist),
+// Pump trade transactions always reference the mint, so per-mint polling
+// catches them. Reuses pump.js's decode pipeline (processTransaction via
+// pollJob): Anchor events → normalized trades → idempotent DB writes.
+//
+// Env: RPC_URL (required), DATABASE_URL (required),
 //      POLL_INTERVAL_MS (default 60000), REFRESH_INTERVAL_MS (default 300000),
 //      PAGE_LIMIT.
 
@@ -24,10 +24,6 @@ import { DECODER_VERSIONS } from './decoders/layouts.js';
 import { pool } from '../db/pool.js';
 import { settleOnce } from './settle.js';
 
-const ENV_MINTS = (process.env.WATCHLIST_MINTS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
 const INTERVAL = Number(process.env.POLL_INTERVAL_MS || 60000);
 const REFRESH_INTERVAL = Number(process.env.REFRESH_INTERVAL_MS || 300000);
 
@@ -65,7 +61,7 @@ async function refreshJobs(force = false) {
   lastRefresh = now;
   const seen = new Set();
   const mints = [];
-  for (const m of [...(await dbMints()), ...ENV_MINTS]) {
+  for (const m of await dbMints()) {
     if (!seen.has(m)) {
       seen.add(m);
       mints.push(m);
