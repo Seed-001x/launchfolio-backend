@@ -20,6 +20,7 @@ import express from 'express';
 import { pool } from '../db/pool.js';
 import { issueNonce, verifySignature, requireAuth } from '../auth/wallet.js';
 import { registerLaunchRoutes, ipfsUpload } from './launch.js';
+import { startAutoRegister } from './autoRegister.js';
 import { trendingScore, TRENDING_WEIGHTS } from '../engines/trending.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -512,4 +513,7 @@ app.listen(PORT, () => {
   if (!process.env.DATABASE_URL) console.warn('[api] DATABASE_URL is not set — requests will fail');
   if (!process.env.JWT_SECRET) console.warn('[api] JWT_SECRET is not set — auth will fail');
   if (!process.env.RPC_URL) console.warn('[api] RPC_URL is not set — holder/portfolio endpoints will 503');
+  // Auto-register sweep: coins whose tx landed but whose browser never called
+  // /launches/register get picked up automatically — no manual step.
+  startAutoRegister({ pool, rpcConnection });
 });

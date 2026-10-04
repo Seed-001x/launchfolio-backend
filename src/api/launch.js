@@ -446,7 +446,7 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
         `INSERT INTO launch_intents (mint, user_id, launcher_wallet, name, symbol,
                                      metadata_uri, pair_mint, creator_fee_bps,
                                      holder_reward, splits, flywheel_pct, socials, aura, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13, now() + interval '15 minutes')
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13, now() + interval '24 hours')
          ON CONFLICT (mint) DO UPDATE SET
            user_id = EXCLUDED.user_id, launcher_wallet = EXCLUDED.launcher_wallet,
            name = EXCLUDED.name, symbol = EXCLUDED.symbol, metadata_uri = EXCLUDED.metadata_uri,
@@ -454,7 +454,7 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
            holder_reward = EXCLUDED.holder_reward, splits = EXCLUDED.splits,
            flywheel_pct = EXCLUDED.flywheel_pct,
            socials = EXCLUDED.socials, aura = EXCLUDED.aura,
-           created_at = now(), expires_at = now() + interval '15 minutes'`,
+           created_at = now(), expires_at = now() + interval '24 hours'`,
         [
           mintStr, req.auth.sub, req.auth.pubkey, name, symbol, metadataUri,
           customQuote ? pairMint : 'SOL', creatorFeeBps, holderReward,
