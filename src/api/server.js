@@ -25,7 +25,7 @@ const PORT = Number(process.env.PORT || 3000);
 const STALE_AFTER_MS = 5 * 60 * 1000; // market data older than this is flagged stale
 
 const app = express();
-app.use(express.json({ limit: '256kb' })); app.use((req, res, next) => { res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization'); if (req.method === 'OPTIONS') return res.sendStatus(204); next(); });
+app.use(express.json({ limit: '256kb' }));
 
 // Express 4 does not catch errors thrown in async route handlers — without
 // this, one failed DB query would crash the whole API. Wrap every route so
@@ -70,6 +70,32 @@ app.patch('/users/:id/handle', requireAuth, async (req, res) => {
     'UPDATE users SET handle = $1 WHERE id = $2 RETURNING id, handle',
     [handle, req.params.id]
   );
+  res.json(rows[0]);
+});
+
+// Full profile edit: display name + avatar URL. Self-only, authenticated.
+app.patch('/users/:id/profile', requireAuth, async (req, res) => {
+  if (req.auth.sub !== req.params.id) {
+    return res.status(403).json({ error: 'you can only edit your own profile' });
+  }
+  const { handle, avatar_url } = req.body ?? {};
+  if (handle !== undefined && handle !== null && (typeof handle !== 'string' || handle.length > 32)) {
+    return res.status(400).json({ error: 'invalid handle' });
+  }
+  if (
+    avatar_url !== undefined && avatar_url !== null && avatar_url !== '' &&
+    (typeof avatar_url !== 'string' || avatar_url.length > 500 || !/^https?:\/\/.+/i.test(avatar_url))
+  ) {
+    return res.status(400).json({ error: 'avatar must be an http(s) URL' });
+  }
+  const { rows } = await pool.query(
+    `UPDATE users SET
+       handle = COALESCE($1, handle),
+       avatar_url = NULLIF($2, '')
+     WHERE id = $3 RETURNING id, handle, avatar_url`,
+    [handle ?? null, avatar_url ?? null, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'user not found' });
   res.json(rows[0]);
 });
 
