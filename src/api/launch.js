@@ -228,6 +228,21 @@ export async function ipfsUpload(fileBuffer, filename, contentType) {
   const j = await res.json();
   const uri = j?.metadataUri || j?.metadata?.image;
   if (!uri) throw new Error('ipfs upload returned no URI');
+  // Pump's API wraps image uploads in a metadata JSON. If we uploaded an
+  // image but got a metadata URI back, resolve it to the actual image URL.
+  if (contentType.startsWith('image/')) {
+    try {
+      const head = await fetch(uri, { method: 'HEAD', signal: AbortSignal.timeout(15000) });
+      const ct = head.headers.get('content-type') || '';
+      if (!ct.startsWith('image/')) {
+        // It's metadata JSON — fetch and extract the image field.
+        const meta = await (await fetch(uri, { signal: AbortSignal.timeout(15000) })).json();
+        if (meta?.image && typeof meta.image === 'string') return meta.image;
+      }
+    } catch {
+      // If resolution fails, return the URI as-is; the frontend has gateway fallback.
+    }
+  }
   return uri;
 }
 
@@ -600,6 +615,67 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
       });
     } catch (e) {
       res.status(500).json({ error: 'flywheel config unavailable', detail: e.message });
+    }
+  });
+
+  // Submit a signed launch transaction. The wallet signs in the browser; the
+  // backend sends + confirms via its fast RPC, then registers automatically.
+  // Body: { mint, signedTxBase64 }. Returns { signature }.
+  app.post('/launches/submit', requireAuth, async (req, res) => {
+    try {
+      const conn = await rpcConnection();
+      if (!conn) return res.status(503).json({ error: 'RPC unavailable' });
+      const { mint, signedTxBase64 } = req.body || {};
+      if (!isPubkey(mint) || typeof signedTxBase64 !== 'string' || !signedTxBase64) {
+        return res.status(400).json({ error: 'mint and signedTxBase64 are required' });
+      }
+
+      const { rows: intents } = await pool.query(
+        'SELECT * FROM launch_intents WHERE mint = $1 AND expires_at > now()',
+        [mint]
+      );
+      if (!intents.length) {
+        return res.status(400).json({ error: 'no live launch intent for this mint (expired or unknown)' });
+      }
+      const intent = intents[0];
+      if (intent.launcher_wallet !== req.auth.pubkey) {
+        return res.status(403).json({ error: 'intent belongs to a different wallet' });
+      }
+
+      let tx;
+      try {
+        tx = VersionedTransaction.deserialize(Buffer.from(signedTxBase64, 'base64'));
+      } catch {
+        return res.status(400).json({ error: 'invalid signed transaction' });
+      }
+      // Sanity: the tx must touch the mint and be signed by the launcher.
+      const mintPk = new PublicKey(mint);
+      const keys = tx.message.staticAccountKeys || [];
+      if (!keys.some((k) => k.equals(mintPk))) {
+        return res.status(400).json({ error: 'transaction does not touch this mint' });
+      }
+
+      const signature = await conn.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+        maxRetries: 3,
+      });
+      // Confirm with a bounded wait — even on timeout the tx may have landed;
+      // the auto-register sweep picks it up regardless.
+      try {
+        const latest = await conn.getLatestBlockhash('confirmed');
+        await conn.confirmTransaction(
+          { signature, blockhash: latest.blockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
+          'confirmed'
+        );
+      } catch (confirmErr) {
+        console.warn('[launch] submit confirm timed out, sweep will verify:', confirmErr.message);
+      }
+
+      res.json({ data: { mint, signature } });
+    } catch (e) {
+      console.error('[launch] submit failed:', e.message);
+      res.status(500).json({ error: 'submit failed', detail: e.message });
     }
   });
 }
