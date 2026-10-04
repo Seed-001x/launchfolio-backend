@@ -26,7 +26,7 @@ const PORT = Number(process.env.PORT || 3000);
 const STALE_AFTER_MS = 5 * 60 * 1000; // market data older than this is flagged stale
 
 const app = express();
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '10mb' })); // artwork uploads ride as base64 data URLs
 
 // Express 4 does not catch errors thrown in async route handlers — without
 // this, one failed DB query would crash the whole API. Wrap every route so
