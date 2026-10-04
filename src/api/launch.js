@@ -234,7 +234,22 @@ export async function ipfsUpload(fileBuffer, filename, contentType) {
 // ---------------------------------------------------------------------------
 // Route registration.
 
-export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) { /* Launch allowlist: when LAUNCH_ALLOWLIST is set (comma-separated pubkeys), only those wallets may use the forge (upload/prepare). Unset = open to all signed-in users. Lets the owner private-test before public launch. */ const launchAllowlist = new Set(String(process.env.LAUNCH_ALLOWLIST || '').split(',').map((s) => s.trim()).filter(Boolean)); const requireLaunchAllowed = (req, res, next) => { if (launchAllowlist.size > 0 && !launchAllowlist.has(req.auth?.pubkey)) { return res.status(403).json({ error: 'launches are in private testing' }); } next(); };
+export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) {
+  // Launch allowlist: when LAUNCH_ALLOWLIST is set (comma-separated pubkeys),
+  // only those wallets may use the forge (upload/prepare). Unset = open to
+  // all signed-in users. Lets the owner private-test before public launch.
+  const launchAllowlist = new Set(
+    String(process.env.LAUNCH_ALLOWLIST || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+  const requireLaunchAllowed = (req, res, next) => {
+    if (launchAllowlist.size > 0 && !launchAllowlist.has(req.auth?.pubkey)) {
+      return res.status(403).json({ error: 'launches are in private testing' });
+    }
+    next();
+  };
   // Searchable list of pump.fun's quote assets (on-chain registries, cached).
   app.get('/pairs', async (req, res) => {
     try {
@@ -341,7 +356,10 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
       }
 
       // Planned fee split (post-launch, signed by the fee wallet — stored, not executed here).
+      // Platform flywheel: fixed FLYWHEEL_PCT of claimed fees buys back the main coin.
       const splits = Array.isArray(b.splits) ? b.splits : [];
+      const flywheelPct = b.holderReward ? 0 : Math.min(100, Math.max(0, Number(b.flywheelPct ?? 10)));
+      const launcherPool = 100 - flywheelPct;
       if (splits.length > 10) return res.status(400).json({ error: 'max 10 split recipients' });
       let splitTotal = 0;
       const seenAddr = new Set();
@@ -353,8 +371,8 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
         seenAddr.add(s.addr);
         splitTotal += pct;
       }
-      if (splits.length && Math.abs(splitTotal - 100) > 1e-9) {
-        return res.status(400).json({ error: 'splits must total exactly 100%' });
+      if (splitTotal - launcherPool > 1e-9) {
+        return res.status(400).json({ error: `splits must total at most ${launcherPool}% (${flywheelPct}% flywheel)` });
       }
 
       // Launcher must hold enough SOL for rent + fees.
@@ -427,19 +445,21 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
       await pool.query(
         `INSERT INTO launch_intents (mint, user_id, launcher_wallet, name, symbol,
                                      metadata_uri, pair_mint, creator_fee_bps,
-                                     holder_reward, splits, socials, aura, expires_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12, now() + interval '15 minutes')
+                                     holder_reward, splits, flywheel_pct, socials, aura, expires_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13, now() + interval '15 minutes')
          ON CONFLICT (mint) DO UPDATE SET
            user_id = EXCLUDED.user_id, launcher_wallet = EXCLUDED.launcher_wallet,
            name = EXCLUDED.name, symbol = EXCLUDED.symbol, metadata_uri = EXCLUDED.metadata_uri,
            pair_mint = EXCLUDED.pair_mint, creator_fee_bps = EXCLUDED.creator_fee_bps,
            holder_reward = EXCLUDED.holder_reward, splits = EXCLUDED.splits,
+           flywheel_pct = EXCLUDED.flywheel_pct,
            socials = EXCLUDED.socials, aura = EXCLUDED.aura,
            created_at = now(), expires_at = now() + interval '15 minutes'`,
         [
           mintStr, req.auth.sub, req.auth.pubkey, name, symbol, metadataUri,
           customQuote ? pairMint : 'SOL', creatorFeeBps, holderReward,
           JSON.stringify(splits.map((s) => ({ addr: s.addr, pct: Number(s.pct) }))),
+          flywheelPct,
           JSON.stringify(b.socials && typeof b.socials === 'object' ? b.socials : {}),
           String(b.aura || '').slice(0, 24),
         ]
@@ -507,9 +527,9 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
       try {
         await client.query('BEGIN');
         await client.query(
-          `INSERT INTO launch_records (mint, launch_signature, launcher_wallet)
-           VALUES ($1,$2,$3) ON CONFLICT (mint) DO NOTHING`,
-          [mint, signature, intent.launcher_wallet]
+          `INSERT INTO launch_records (mint, launch_signature, launcher_wallet, flywheel_pct, splits)
+           VALUES ($1,$2,$3,$4,$5::jsonb) ON CONFLICT (mint) DO NOTHING`,
+          [mint, signature, intent.launcher_wallet, intent.flywheel_pct ?? 10, JSON.stringify(intent.splits || [])]
         );
         await client.query(
           `INSERT INTO tokens (mint, name, ticker, image_url, description, creator_wallet,
@@ -560,6 +580,26 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
     } catch (e) {
       console.error('[launch] register failed:', e.message);
       res.status(500).json({ error: 'register failed', detail: e.message });
+    }
+  });
+
+  // Flywheel config for the fee worker: every registered launch's fee plan.
+  // Public (read-only) — the worker needs no auth, the splits are public by design.
+  app.get('/flywheel/config', async (req, res) => {
+    try {
+      const { rows } = await pool.query(
+        `SELECT mint, launcher_wallet, flywheel_pct, splits
+         FROM launch_records ORDER BY created_at`
+      );
+      res.json({
+        data: {
+          mainCoinMint: process.env.MAIN_COIN_MINT || null,
+          feeWallet: process.env.FEE_WALLET || null,
+          launches: rows,
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ error: 'flywheel config unavailable', detail: e.message });
     }
   });
 }
