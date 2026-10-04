@@ -251,20 +251,9 @@ export async function ipfsUpload(fileBuffer, filename, contentType) {
 
 export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) {
   // Launch allowlist: when LAUNCH_ALLOWLIST is set (comma-separated pubkeys),
-  // only those wallets may use the forge (upload/prepare). Unset = open to
-  // all signed-in users. Lets the owner private-test before public launch.
-  const launchAllowlist = new Set(
-    String(process.env.LAUNCH_ALLOWLIST || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-  );
-  const requireLaunchAllowed = (req, res, next) => {
-    if (launchAllowlist.size > 0 && !launchAllowlist.has(req.auth?.pubkey)) {
-      return res.status(403).json({ error: 'launches are in private testing' });
-    }
-    next();
-  };
+  // Launch allowlist (retired 2026-10-04): launches are open to all signed-in
+  // users. The LAUNCH_ALLOWLIST env var and requireLaunchAllowed middleware
+  // are no longer used.
   // Searchable list of pump.fun's quote assets (on-chain registries, cached).
   app.get('/pairs', async (req, res) => {
     try {
@@ -287,7 +276,7 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
 
   // Artwork + metadata upload -> IPFS. Body: { image: dataUrl, name, symbol,
   // description, socials? }. Returns { imageUri, metadataUri }.
-  app.post('/launches/upload', requireAuth, requireLaunchAllowed, async (req, res) => {
+  app.post('/launches/upload', requireAuth, async (req, res) => {
     try {
       const { image, name, symbol, description, socials } = req.body || {};
       if (typeof image !== 'string' || !image.startsWith('data:image/')) {
@@ -323,7 +312,7 @@ export function registerLaunchRoutes(app, { pool, rpcConnection, requireAuth }) 
   // Build the UNSIGNED create transaction. Body: { mint, name, symbol,
   // metadataUri, pairMint ('SOL' default), creatorFeeBps, holderReward,
   // splits[], socials{}, aura }.
-  app.post('/launches/prepare', requireAuth, requireLaunchAllowed, async (req, res) => {
+  app.post('/launches/prepare', requireAuth, async (req, res) => {
     try {
       const conn = await rpcConnection();
       if (!conn) return res.status(503).json({ error: 'RPC unavailable' });
