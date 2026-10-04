@@ -32,7 +32,13 @@ function randomNonce() {
   return Buffer.from(bytes).toString('hex');
 }
 
-/** POST /auth/nonce — issue a fresh single-use nonce for a pubkey. */
+/** POST /auth/nonce — issue a fresh single-use nonce for a pubkey.
+ *
+ *  Multiple nonces may be outstanding per pubkey (multi-tab sign-in): each
+ *  INSERT is independent and verify looks up the exact (pubkey, nonce) pair.
+ *  Overwriting (the old ON CONFLICT behavior) invalidated other tabs' pending
+ *  signatures and made sign-in impossible with >1 tab open. Expired nonces are
+ *  pruned opportunistically. */
 export async function issueNonce(req, res) {
   const { pubkey } = req.body ?? {};
   if (typeof pubkey !== 'string' || pubkey.length < 32 || pubkey.length > 64) {
@@ -40,11 +46,10 @@ export async function issueNonce(req, res) {
   }
   const nonce = randomNonce();
   const expiresAt = new Date(Date.now() + NONCE_TTL_MS);
+  await pool.query(`DELETE FROM auth_nonces WHERE expires_at < now() - interval '1 hour'`);
   await pool.query(
     `INSERT INTO auth_nonces (pubkey, nonce, expires_at, used)
-     VALUES ($1, $2, $3, false)
-     ON CONFLICT (pubkey) DO UPDATE
-     SET nonce = EXCLUDED.nonce, expires_at = EXCLUDED.expires_at, used = false`,
+     VALUES ($1, $2, $3, false)`,
     [pubkey, nonce, expiresAt]
   );
   res.json({ nonce, message: signInMessage(nonce), expires_at: expiresAt.toISOString() });
@@ -62,9 +67,12 @@ export async function verifySignature(req, res) {
     return res.status(400).json({ error: 'invalid signature format' });
   }
 
-  const { rows } = await pool.query('SELECT * FROM auth_nonces WHERE pubkey = $1', [pubkey]);
+  const { rows } = await pool.query(
+    'SELECT * FROM auth_nonces WHERE pubkey = $1 AND nonce = $2',
+    [pubkey, nonce]
+  );
   const row = rows[0];
-  if (!row || row.used || row.nonce !== nonce || new Date(row.expires_at) < new Date()) {
+  if (!row || row.used || new Date(row.expires_at) < new Date()) {
     return res.status(401).json({ error: 'nonce invalid, used, or expired' });
   }
 
@@ -93,7 +101,7 @@ export async function verifySignature(req, res) {
     return res.status(401).json({ error: 'signature verification failed' });
   }
 
-  await pool.query('UPDATE auth_nonces SET used = true WHERE pubkey = $1', [pubkey]);
+  await pool.query('UPDATE auth_nonces SET used = true WHERE pubkey = $1 AND nonce = $2', [pubkey, nonce]);
 
   // Find-or-create user, link wallet as verified (multi-wallet ready).
   const client = await pool.connect();
