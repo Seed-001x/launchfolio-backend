@@ -214,8 +214,8 @@ export async function refreshPairRegistry(pool, connection) {
 
 // ---------------------------------------------------------------------------
 // IPFS upload (pump.fun's uploader; backend-side so CORS is not an issue).
-
-async function ipfsUpload(fileBuffer, filename, contentType) {
+// Exported for the avatar upload route in server.js.
+export async function ipfsUpload(fileBuffer, filename, contentType) {
   const blob = new Blob([fileBuffer], { type: contentType });
   const fd = new FormData();
   fd.append('file', blob, filename);

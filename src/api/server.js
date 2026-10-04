@@ -19,7 +19,7 @@
 import express from 'express';
 import { pool } from '../db/pool.js';
 import { issueNonce, verifySignature, requireAuth } from '../auth/wallet.js';
-import { registerLaunchRoutes } from './launch.js';
+import { registerLaunchRoutes, ipfsUpload } from './launch.js';
 import { trendingScore, TRENDING_WEIGHTS } from '../engines/trending.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -98,6 +98,33 @@ app.patch('/users/:id/profile', requireAuth, async (req, res) => {
   );
   if (!rows.length) return res.status(404).json({ error: 'user not found' });
   res.json(rows[0]);
+});
+
+// Avatar upload: image -> IPFS, URL saved to the user's profile.
+// Self-only, authenticated. Body: { image: dataUrl }. Returns { avatar_url }.
+app.post('/users/:id/avatar', requireAuth, async (req, res) => {
+  if (req.auth.sub !== req.params.id) {
+    return res.status(403).json({ error: 'you can only edit your own profile' });
+  }
+  try {
+    const { image } = req.body ?? {};
+    if (typeof image !== 'string' || !image.startsWith('data:image/')) {
+      return res.status(400).json({ error: 'image must be a data URL' });
+    }
+    const m = /^data:(image\/(png|jpeg|gif|webp));base64,(.+)$/.exec(image);
+    if (!m) return res.status(400).json({ error: 'unsupported image format (png/jpeg/gif/webp)' });
+    const buf = Buffer.from(m[3], 'base64');
+    if (buf.length > 5 * 1024 * 1024) return res.status(400).json({ error: 'image too large (5MB max)' });
+    const avatarUrl = await ipfsUpload(buf, 'avatar', m[1]);
+    const { rows } = await pool.query(
+      'UPDATE users SET avatar_url = $1 WHERE id = $2 RETURNING id, handle, avatar_url',
+      [avatarUrl, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'user not found' });
+    res.json({ avatar_url: rows[0].avatar_url });
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'avatar upload failed' });
+  }
 });
 
 // ---------------------------------------------------------------- tokens
