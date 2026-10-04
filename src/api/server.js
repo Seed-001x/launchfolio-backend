@@ -19,6 +19,7 @@
 import express from 'express';
 import { pool } from '../db/pool.js';
 import { issueNonce, verifySignature, requireAuth } from '../auth/wallet.js';
+import { registerLaunchRoutes } from './launch.js';
 import { trendingScore, TRENDING_WEIGHTS } from '../engines/trending.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -426,8 +427,11 @@ app.get('/economy/fees', async (req, res) => {
 });
 
 // ---------------------------------------------------------------- health
-app.get('/health', async (req, res) => {
-  const { rows: checkpoints } = await pool.query('SELECT * FROM indexer_checkpoints');
+
+// Launch pipeline: pairs registry, IPFS upload, unsigned-tx prepare, on-chain register.
+registerLaunchRoutes(app, { pool, rpcConnection, requireAuth });
+
+app.get('/health', async (req, res) => {  const { rows: checkpoints } = await pool.query('SELECT * FROM indexer_checkpoints');
   const counts = {};
   for (const t of ['tokens', 'trades', 'positions', 'cards', 'xp_events', 'fee_events']) {
     const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM ${t}`);
